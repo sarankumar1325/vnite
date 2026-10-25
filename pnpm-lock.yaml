@@ -247,6 +247,9 @@ importers:
       vnite-native:
         specifier: workspace:*
         version: link:native
+      yauzl:
+        specifier: ^2.10.0
+        version: 2.10.0
       yet-another-react-lightbox:
         specifier: ^3.32.1
         version: 3.32.2(@types/react-dom@19.1.6(@types/react@19.1.8))(@types/react@19.1.8)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
@@ -326,6 +329,9 @@ importers:
       '@types/uuid':
         specifier: ^10.0.0
         version: 10.0.0
+      '@types/yauzl':
+        specifier: ^2.10.3
+        version: 2.10.3
       '@vitejs/plugin-react':
         specifier: ^4.7.0
         version: 4.7.0(vite@7.0.6(@types/node@22.16.5)(jiti@2.4.2)(lightningcss@1.30.1)(tsx@4.20.6))
@@ -9745,7 +9751,6 @@ snapshots:
   '@types/yauzl@2.10.3':
     dependencies:
       '@types/node': 22.16.5
-    optional: true
 
   '@typescript-eslint/eslint-plugin@8.35.1(@typescript-eslint/parser@8.35.1(eslint@9.32.0(jiti@2.4.2))(typescript@5.8.3))(eslint@9.32.0(jiti@2.4.2))(typescript@5.8.3)':
     dependencies:
