@@ -2,8 +2,9 @@ import fse from 'fs-extra'
 import archiver from 'archiver'
 import path from 'path'
 import yauzl from 'yauzl'
-import { Readable } from 'stream'
+import { Transform } from 'stream'
 import { pipeline } from 'stream/promises'
+import { crc32 } from 'zlib'
 import log from 'electron-log/main'
 
 interface ZipOptions {
@@ -98,6 +99,25 @@ export async function zipFolder(
   }
 }
 
+// yauzl does not verify CRC-32, so compare the extracted bytes with the
+// checksum recorded in the central directory (like adm-zip did).
+function crc32Check(entry: yauzl.Entry): Transform {
+  let crc = 0
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback): void {
+      crc = crc32(chunk, crc)
+      callback(null, chunk)
+    },
+    flush(callback): void {
+      if (crc >>> 0 !== entry.crc32 >>> 0) {
+        callback(new Error(`CRC-32 mismatch for zip entry: ${entry.fileName}`))
+      } else {
+        callback()
+      }
+    }
+  })
+}
+
 interface UnzipOptions {
   // Whether to overwrite existing files, default is true.
   overwrite?: boolean
@@ -114,59 +134,37 @@ export async function unzipFile(
     await fse.ensureDir(normalizedTargetDir)
 
     // Stream entries one by one so archives larger than 2 GiB (Node's Buffer limit) can be extracted
-    const zip = await new Promise<yauzl.ZipFile>((resolve, reject) => {
-      yauzl.open(zipPath, { lazyEntries: true, autoClose: true }, (err, zipFile) => {
-        if (err || !zipFile) reject(err ?? new Error(`Failed to open zip file: ${zipPath}`))
-        else resolve(zipFile)
-      })
-    })
-
+    const zip = await yauzl.openPromise(zipPath, { autoClose: true })
     const extractedFiles: string[] = []
 
-    await new Promise<void>((resolve, reject) => {
-      const fail = (error: Error): void => {
-        zip.close()
-        reject(error)
+    for await (const entry of zip.eachEntry()) {
+      const filePath = path.resolve(normalizedTargetDir, entry.fileName)
+      if (
+        filePath !== normalizedTargetDir &&
+        !filePath.startsWith(normalizedTargetDir + path.sep)
+      ) {
+        throw new Error(`Zip entry is outside the target directory: ${entry.fileName}`)
       }
 
-      const extractEntry = async (entry: yauzl.Entry): Promise<void> => {
-        const filePath = path.resolve(normalizedTargetDir, entry.fileName)
-        if (
-          filePath !== normalizedTargetDir &&
-          !filePath.startsWith(normalizedTargetDir + path.sep)
-        ) {
-          throw new Error(`Zip entry is outside the target directory: ${entry.fileName}`)
-        }
-
-        if (/\/$/.test(entry.fileName)) {
-          await fse.ensureDir(filePath)
-          return
-        }
-
-        if (!overwrite && (await fse.pathExists(filePath))) {
-          return
-        }
-
-        await fse.ensureDir(path.dirname(filePath))
-        const readStream = await new Promise<Readable>((resolveStream, rejectStream) => {
-          zip.openReadStream(entry, (err, stream) => {
-            if (err || !stream) rejectStream(err ?? new Error(`Failed to read ${entry.fileName}`))
-            else resolveStream(stream)
-          })
-        })
-        await pipeline(readStream, fse.createWriteStream(filePath))
-        extractedFiles.push(filePath)
+      if (/\/$/.test(entry.fileName)) {
+        await fse.ensureDir(filePath)
+        continue
       }
 
-      zip.on('entry', (entry: yauzl.Entry) => {
-        extractEntry(entry)
-          .then(() => zip.readEntry())
-          .catch(fail)
-      })
-      zip.on('end', resolve)
-      zip.on('error', fail)
-      zip.readEntry()
-    })
+      if (!overwrite && (await fse.pathExists(filePath))) {
+        continue
+      }
+
+      await fse.ensureDir(path.dirname(filePath))
+      const readStream = await zip.openReadStreamPromise(entry)
+      try {
+        await pipeline(readStream, crc32Check(entry), fse.createWriteStream(filePath))
+      } catch (error) {
+        await fse.remove(filePath)
+        throw error
+      }
+      extractedFiles.push(filePath)
+    }
 
     return extractedFiles
   } catch (error) {
